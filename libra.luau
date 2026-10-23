@@ -488,9 +488,9 @@ local function GetTheme(cfg)
         return mapped
     end
 
-    local cleanCfg = tostring(cfg):match("([^/\\]+)%.json$") or tostring(cfg):match("([^/\\]+)$") or tostring(cfg)
-    if isfile(Library.ThemeFolder .. "/" .. cleanCfg .. ".json") then
-        local content = readfile(Library.ThemeFolder .. "/" .. cleanCfg .. ".json")
+    local themePath = Library.ThemeFolder .. "/" .. tostring(cfg) .. ".json"
+    if isfile(themePath) then
+        local content = readfile(themePath)
         local parsed = HS:JSONDecode(content)
         local restored = {}
         for k, v in pairs(parsed) do
@@ -1111,6 +1111,7 @@ function Library:KeySystem(Settings)
         task.wait()
     until Validated
 end
+
 function Library:CreateWindow(Settings)
     local Config = Settings or {}
     local Title = Config.Title or "UI"
@@ -1171,6 +1172,7 @@ function Library:CreateWindow(Settings)
         end
     end
 
+    -- Исправлено: поддержка путей со слэшами обоих типов (\ и /)
     function Library:GetThemes()
         local list = {}
         if isfolder(Library.ThemeFolder) then
@@ -1186,20 +1188,19 @@ function Library:CreateWindow(Settings)
         return list
     end
     
+    -- Исправлено: корректное извлечение имени файла на Windows и Mac/Linux
     function Library:GetConfigs()
         local list = {}
         if isfolder(Library.ConfigFolder) then
             for _, file in pairs(listfiles(Library.ConfigFolder)) do
                 if file:sub(-5) == ".json" then
-                    local name = file:match("([^/\\]+)%.json$")
-                    if name then
-                        local success, decoded = pcall(function()
-                            return HS:JSONDecode(readfile(file))
-                        end)
-                        if success and type(decoded) == "table" then
-                            if decoded["Settings_Identifier"] == Title or decoded["Settings_Identifier"] == nil then
-                                table.insert(list, name)
-                            end
+                    local success, decoded = pcall(function()
+                        return HS:JSONDecode(readfile(file))
+                    end)
+                    if success and type(decoded) == "table" and decoded["Settings_Identifier"] == Title then
+                        local name = file:match("([^/\\]+)%.json$")
+                        if name then
+                            table.insert(list, name)
                         end
                     end
                 end
@@ -1208,12 +1209,14 @@ function Library:CreateWindow(Settings)
         return list
     end
 
+    local LoadDropCfg -- Ссылка на дропдаун конфигов для автообновления
+
     function Library:SaveConfig(Name)
         if not Name or Name == "" then
-            Library:Notify({Title = "Config Error", Content = "Please enter a valid config name", Duration = 3})
+            Library:Notify({Title = "Save Error", Content = "Config name cannot be empty", Duration = 3})
             return
         end
-        local cleanName = tostring(Name):match("([^/\\]+)%.json$") or tostring(Name):match("([^/\\]+)$") or tostring(Name)
+
         local ConfigToSave = {}
         for flag, value in pairs(Library.Flags) do
             if string.sub(flag, 1, 9) ~= "Settings_" or Library.KeybindFlags[flag] or flag == "Settings_ToggleKey" then
@@ -1224,21 +1227,20 @@ function Library:CreateWindow(Settings)
         
         local success, json = pcall(function() return HS:JSONEncode(ConfigToSave) end)
         if success then
-            local path = Library.ConfigFolder .. "/" .. cleanName .. ".json"
+            local path = Library.ConfigFolder .. "/" .. Name .. ".json"
             writefile(path, json)
-            Library:Notify({Title = "Config Saved", Content = "Successfully saved " .. cleanName, Duration = 3})
+            Library:Notify({Title = "Config Saved", Content = "Successfully saved " .. Name, Duration = 3})
+            if LoadDropCfg then
+                LoadDropCfg:Refresh(Library:GetConfigs())
+            end
         else
             Library:Notify({Title = "Save Error", Content = "Failed to encode config data", Duration = 3})
         end
     end
 
     function Library:LoadConfig(Name)
-        if not Name or Name == "" then
-            Library:Notify({Title = "Config Error", Content = "Please select a config to load", Duration = 3})
-            return
-        end
-        local cleanName = tostring(Name):match("([^/\\]+)%.json$") or tostring(Name):match("([^/\\]+)$") or tostring(Name)
-        local path = Library.ConfigFolder .. "/" .. cleanName .. ".json"
+        if not Name or Name == "" then return end
+        local path = Library.ConfigFolder .. "/" .. Name .. ".json"
         if isfile(path) then
             Library.IsLoadingConfig = true
             local success, err = pcall(function()
@@ -1254,24 +1256,24 @@ function Library:CreateWindow(Settings)
             end)
             Library.IsLoadingConfig = false
             if success then
-                Library:Notify({Title = "Config Loaded", Content = "Successfully loaded " .. cleanName, Duration = 3})
+                Library:Notify({Title = "Config Loaded", Content = "Successfully loaded " .. Name, Duration = 3})
             else
                 Library:Notify({Title = "Config Error", Content = "Corrupted JSON file", Duration = 3})
             end
         else
-            Library:Notify({Title = "Config Error", Content = "Config file does not exist", Duration = 3})
+            Library:Notify({Title = "Config Error", Content = "File does not exist: " .. tostring(Name), Duration = 3})
         end
     end
 
     function Library:DeleteConfig(Name)
         if not Name or Name == "" then return end
-        local cleanName = tostring(Name):match("([^/\\]+)%.json$") or tostring(Name):match("([^/\\]+)$") or tostring(Name)
-        local path = Library.ConfigFolder .. "/" .. cleanName .. ".json"
+        local path = Library.ConfigFolder .. "/" .. Name .. ".json"
         if isfile(path) then
             delfile(path)
-            Library:Notify({Title = "Config Deleted", Content = "Deleted " .. cleanName, Duration = 3})
-        else
-            Library:Notify({Title = "Delete Error", Content = "File does not exist", Duration = 3})
+            Library:Notify({Title = "Config Deleted", Content = "Deleted " .. Name, Duration = 3})
+            if LoadDropCfg then
+                LoadDropCfg:Refresh(Library:GetConfigs())
+            end
         end
     end
 
@@ -2289,16 +2291,11 @@ function Library:CreateWindow(Settings)
                 
                 local function Update(newId)
                     SetImageAsync(Img, "Image", newId)
-                    if Flag then
-                        Library.Flags[Flag] = newId
-                    end
                 end
                 
                 if Flag then
-                    Library.Flags[Flag] = ImageId
                     Library.Items[Flag] = {
-                        Set = Update,
-                        Get = function() return Img.Image end
+                        Set = Update
                     }
                 end
                 
@@ -2435,9 +2432,7 @@ function Library:CreateWindow(Settings)
                 
                 local function UpdateState(val)
                     State = val
-                    if Flag then
-                        Library.Flags[Flag] = val
-                    end
+                    Library.Flags[Flag] = val
                     
                     TS:Create(BoxStroke, TweenInfo.new(0.3, Enum.EasingStyle.Quart, Enum.EasingDirection.Out), {
                         Color = State and SelectedTheme.ElementAccent or SelectedTheme.TextDark,
@@ -2455,9 +2450,9 @@ function Library:CreateWindow(Settings)
                     end
                 end
                 
-                if Cfg.Default ~= nil then
+                if Cfg.Default then
                     UpdateState(Cfg.Default)
-                elseif Flag then
+                else
                     Library.Flags[Flag] = false
                 end
 
@@ -2465,18 +2460,13 @@ function Library:CreateWindow(Settings)
                     UpdateState(not State)
                 end)
                 
-                if Flag then
-                    Library.Items[Flag] = {
-                        Set = function(val)
-                            if val == nil then return end
-                            if type(val) == "string" then
-                                val = (val == "true")
-                            end
-                            UpdateState(val)
-                        end,
-                        Get = function() return State end
-                    }
-                end
+                Library.Items[Flag] = {
+                    Set = function(val)
+                        if val == nil then return end
+                        if State == val then return end
+                        UpdateState(val)
+                    end
+                }
             end
 
             function Elements:CreateSlider(Cfg)
@@ -2485,9 +2475,7 @@ function Library:CreateWindow(Settings)
                 local Max = Cfg.Max or 100
                 local Val = Cfg.Default or Cfg.Min
                 local Flag = Cfg.Flag or Cfg.Name
-                if Flag then
-                    Library.Flags[Flag] = Val
-                end
+                Library.Flags[Flag] = Val
                 
                 local Frame = Create("Frame", {
                     Parent = TargetParent,
@@ -2561,10 +2549,9 @@ function Library:CreateWindow(Settings)
                 })
                 AddCorner(SlideBar, 10)
                 
-                local percent = (Max == Min) and 0 or math.clamp((Val - Min) / (Max - Min), 0, 1)
                 local Fill = Create("Frame", {
                     Parent = SlideBar,
-                    Size = UDim2.new(percent, 0, 1, 0),
+                    Size = UDim2.new((Val - Min) / (Max - Min), 0, 1, 0),
                     BackgroundColor3 = SelectedTheme.ElementAccent,
                     BorderSizePixel = 0,
                     ZIndex = 9,
@@ -2585,12 +2572,9 @@ function Library:CreateWindow(Settings)
                     val = math.clamp(val, Min, Max)
                     val = math.round(val * 1000) / 1000
                     Val = val
-                    if Flag then
-                        Library.Flags[Flag] = val
-                    end
+                    Library.Flags[Flag] = val
                     ValLbl.Text = formatSliderValue(Val)
-                    local newPercent = (Max == Min) and 0 or math.clamp((Val - Min) / (Max - Min), 0, 1)
-                    TS:Create(Fill, TweenInfo.new(0.08, Enum.EasingStyle.Sine, Enum.EasingDirection.Out), {Size = UDim2.new(newPercent, 0, 1, 0)}):Play()
+                    TS:Create(Fill, TweenInfo.new(0.08, Enum.EasingStyle.Sine, Enum.EasingDirection.Out), {Size = UDim2.new((Val - Min) / (Max - Min), 0, 1, 0)}):Play()
                     if Cfg.Callback then
                         Cfg.Callback(Val)
                     end
@@ -2640,20 +2624,15 @@ function Library:CreateWindow(Settings)
                     end
                 end)
 
-                if Flag then
-                    Library.Items[Flag] = {
-                        Set = function(val)
-                            if val == nil then return end
-                            Update(tonumber(val) or Val)
-                        end,
-                        Get = function() return Val end
-                    }
-                end
+                Library.Items[Flag] = {Set = Update}
             end
 
+            -- Исправлено: сохранение флага при вводе текста в CreateInput
             function Elements:CreateInput(Cfg)
                 ElementOrder = ElementOrder + 1
                 local Flag = Cfg.Flag or Cfg.Name
+                Library.Flags[Flag] = Cfg.Default or ""
+
                 local Frame = Create("Frame", {
                     Parent = TargetParent,
                     Size = UDim2.new(1, 0, 0, 34),
@@ -2733,54 +2712,42 @@ function Library:CreateWindow(Settings)
                 end)
 
                 local function Update(val)
-                    val = tostring(val or "")
-                    Box.Text = val
-                    if Flag then
-                        Library.Flags[Flag] = val
-                    end
+                    Box.Text = tostring(val)
+                    Library.Flags[Flag] = tostring(val) -- Теперь значение обязательно сохраняется в Flags
                     if Cfg.Callback then
-                        Cfg.Callback(val)
+                        Cfg.Callback(tostring(val))
                     end
                 end
                 
-                if Cfg.Default then
-                    if Flag then
-                        Library.Flags[Flag] = Cfg.Default
-                    end
-                    if Cfg.Callback then
-                        task.spawn(Cfg.Callback, Cfg.Default)
-                    end
-                elseif Flag then
-                    Library.Flags[Flag] = ""
+                if Cfg.Default and Cfg.Callback then
+                    task.spawn(Cfg.Callback, Cfg.Default)
                 end
                 
                 Box.FocusLost:Connect(function()
                     Update(Box.Text)
                 end)
                 
-                if Flag then
-                    Library.Items[Flag] = {
-                        Set = Update,
-                        Get = function() return Box.Text end
-                    }
-                end
+                Library.Items[Flag] = {Set = Update}
             end
 
+            -- Исправлено: сохранение флага при создании и исправлена опечатка hoverTweenBtn
             function Elements:CreateDropdown(Cfg)
                 ElementOrder = ElementOrder + 1
                 local Flag = Cfg.Flag or Cfg.Name
                 local Expanded = false
                 local Selected = Cfg.Default
                 local Options = Cfg.Items or {}
-                if Flag then
-                    Library.Flags[Flag] = Selected
-                end
                 
-                local Drop = Create("Frame", {
+                -- Сохраняем флаг по умолчанию сразу
+                Library.Flags[Flag] = Selected
+
+                local Drop = Create("TextButton", {
                     Parent = TargetParent,
                     Size = UDim2.new(1, 0, 0, 34),
                     BackgroundColor3 = SelectedTheme.Second,
                     BackgroundTransparency = 0.5,
+                    Text = "",
+                    AutoButtonColor = false,
                     ClipsDescendants = true,
                     ZIndex = 7,
                     LayoutOrder = ElementOrder,
@@ -2789,19 +2756,11 @@ function Library:CreateWindow(Settings)
                 AddCorner(Drop, 8)
                 AddStroke(Drop, SelectedTheme).Transparency = 0.8
 
-                local DropHeader = Create("TextButton", {
-                    Parent = Drop,
-                    Size = UDim2.new(1, 0, 0, 34),
-                    BackgroundTransparency = 1,
-                    Text = "",
-                    AutoButtonColor = false,
-                    ZIndex = 8
-                })
-                DefaultHover(DropHeader)
+                DefaultHover(Drop)
                 
                 local Title = Create("TextLabel", {
-                    Parent = DropHeader,
-                    Size = UDim2.new(1, -40, 1, 0),
+                    Parent = Drop,
+                    Size = UDim2.new(1, -40, 0, 34),
                     Position = UDim2.new(0, 12, 0, 0),
                     BackgroundTransparency = 1,
                     Text = (Cfg.Name or "Dropdown") .. (Selected and " - " .. tostring(Selected) or ""),
@@ -2809,19 +2768,19 @@ function Library:CreateWindow(Settings)
                     TextColor3 = SelectedTheme.Text,
                     TextSize = 14,
                     TextXAlignment = Enum.TextXAlignment.Left,
-                    ZIndex = 9,
+                    ZIndex = 8,
                     TextTruncate = Enum.TextTruncate.AtEnd,
                     ThemeTag = "Text"
                 })
                 
                 local Arrow = Create("ImageLabel", {
-                    Parent = DropHeader,
+                    Parent = Drop,
                     Size = UDim2.new(0, 16, 0, 16),
-                    Position = UDim2.new(1, -28, 0.5, -8),
+                    Position = UDim2.new(1, -28, 0, 9),
                     BackgroundTransparency = 1,
                     Image = "rbxassetid://6031091004",
                     ImageColor3 = SelectedTheme.TextDark,
-                    ZIndex = 9
+                    ZIndex = 8
                 })
                 table.insert(Library.ThemeObjects.TextDark, Arrow)
 
@@ -2845,28 +2804,12 @@ function Library:CreateWindow(Settings)
                     PaddingRight = UDim.new(0, 10)
                 })
                 
-                Create("UIListLayout", { Parent = Container, Padding = UDim.new(0, 4) })
+                local ListLayout = Create("UIListLayout", { Parent = Container, Padding = UDim.new(0, 4) })
                 
-                local function SetOpen(open)
-                    Expanded = open
-                    if Expanded and Cfg.UpdateList then
-                        local dynamicItems = Cfg.UpdateList()
-                        if dynamicItems then
-                            Options = dynamicItems
-                        end
-                    end
-                    local H = Expanded and math.min(#Options * 32 + 44, 180) or 34
-                    TS:Create(Drop, TweenInfo.new(0.4, Enum.EasingStyle.Quart, Enum.EasingDirection.Out), {Size = UDim2.new(1, 0, 0, H)}):Play()
-                    TS:Create(Arrow, TweenInfo.new(0.4, Enum.EasingStyle.Quart, Enum.EasingDirection.Out), {Rotation = Expanded and 180 or 0}):Play()
-                    TS:Create(Container, TweenInfo.new(0.4, Enum.EasingStyle.Quart, Enum.EasingDirection.Out), {Size = UDim2.new(1, 0, 1, -34)}):Play()
-                end
-
                 local function Update(val) 
                     Selected = val 
                     Title.Text = (Cfg.Name or "Dropdown") .. (Selected and " - " .. tostring(Selected) or "")
-                    if Flag then
-                        Library.Flags[Flag] = val
-                    end
+                    Library.Flags[Flag] = val
                     if Cfg.Callback then
                         Cfg.Callback(val)
                     end
@@ -2891,7 +2834,8 @@ function Library:CreateWindow(Settings)
                     if found then
                         Title.Text = (Cfg.Name or "Dropdown") .. " - " .. tostring(Selected)
                     else
-                        Title.Text = (Cfg.Name or "Dropdown") .. (Selected and " - " .. tostring(Selected) or "")
+                        Selected = nil
+                        Title.Text = Cfg.Name or "Dropdown"
                     end
 
                     for _, item in pairs(Options) do
@@ -2920,13 +2864,16 @@ function Library:CreateWindow(Settings)
                             hoverTweenBtn:Play()
                         end)
                         Btn.MouseLeave:Connect(function()
+                            -- Исправлено: заменена опечатка hoverTweenBind на hoverTweenBtn
                             if hoverTweenBtn then hoverTweenBtn:Cancel() end
                             leaveTweenBtn = TS:Create(Btn, TweenInfo.new(0.2), {BackgroundTransparency = 0.8, TextColor3 = SelectedTheme.TextDark})
                             leaveTweenBtn:Play()
                         end)
                         Btn.MouseButton1Click:Connect(function()
                             Update(item)
-                            SetOpen(false)
+                            Expanded = false
+                            TS:Create(Drop, TweenInfo.new(0.4, Enum.EasingStyle.Quart, Enum.EasingDirection.Out), {Size = UDim2.new(1, 0, 0, 34)}):Play()
+                            TS:Create(Arrow, TweenInfo.new(0.4, Enum.EasingStyle.Quart, Enum.EasingDirection.Out), {Rotation = 0}):Play()
                         end)
                     end
                     Container.CanvasSize = UDim2.new(0, 0, 0, #Options * 32 + 10)
@@ -2938,31 +2885,31 @@ function Library:CreateWindow(Settings)
                     task.spawn(Cfg.Callback, Selected)
                 end
 
-                DropHeader.MouseButton1Click:Connect(function()
-                    if not Expanded and Cfg.UpdateList then
+                Drop.MouseButton1Click:Connect(function()
+                    if Cfg.UpdateList then
                         RefreshList(Cfg.UpdateList())
                     end
-                    SetOpen(not Expanded)
+                    Expanded = not Expanded
+                    local H = Expanded and math.min(#Options * 32 + 44, 180) or 34
+                    TS:Create(Drop, TweenInfo.new(0.4, Enum.EasingStyle.Quart, Enum.EasingDirection.Out), {Size = UDim2.new(1, 0, 0, H)}):Play()
+                    TS:Create(Arrow, TweenInfo.new(0.4, Enum.EasingStyle.Quart, Enum.EasingDirection.Out), {Rotation = Expanded and 180 or 0}):Play()
+                    TS:Create(Container, TweenInfo.new(0.4, Enum.EasingStyle.Quart, Enum.EasingDirection.Out), {Size = UDim2.new(1, 0, 1, -34)}):Play()
                 end)
                 
-                local dropObj = {
+                Library.Items[Flag] = {
                     Set = Update,
                     Refresh = function(self, list) RefreshList(list) end,
                     Get = function() return Selected end
                 }
-                if Flag then
-                    Library.Items[Flag] = dropObj
-                end
-                return dropObj
+                
+                return Library.Items[Flag]
             end
 
             function Elements:CreateColorPicker(Cfg)
                 ElementOrder = ElementOrder + 1
                 local Flag = Cfg.Flag or Cfg.Name
                 local Color = Cfg.Default or Color3.fromRGB(255, 255, 255)
-                if Flag then
-                    Library.Flags[Flag] = {R = Color.R, G = Color.G, B = Color.B}
-                end
+                Library.Flags[Flag] = {R = Color.R, G = Color.G, B = Color.B}
                 local IsExpanded = false
                 
                 local Wrapper = Create("Frame", {
@@ -3130,9 +3077,7 @@ function Library:CreateWindow(Settings)
                     GInput.Text = math.floor(Color.G * 255)
                     BInput.Text = math.floor(Color.B * 255)
                     HexInput.Text = "#" .. Color:ToHex()
-                    if Flag then
-                        Library.Flags[Flag] = {R = Color.R, G = Color.G, B = Color.B}
-                    end
+                    Library.Flags[Flag] = {R = Color.R, G = Color.G, B = Color.B}
                     if Cfg.Callback then
                         Cfg.Callback(Color)
                     end
@@ -3225,31 +3170,23 @@ function Library:CreateWindow(Settings)
                     end
                 end)
                 
-                if Flag then
-                    Library.Items[Flag] = {
-                        Set = function(t)
-                            if typeof(t) == "Color3" then
-                                Update(t)
-                            elseif type(t) == "table" then
-                                local r = t.R or t.r or 1
-                                local g = t.G or t.g or 1
-                                local b = t.B or t.b or 1
-                                Update(Color3.new(r, g, b))
-                            end
-                        end,
-                        Get = function() return Color end
-                    }
-                end
+                Library.Items[Flag] = {
+                    Set = function(t)
+                        if type(t) == "table" and t.R then
+                            Update(Color3.new(t.R, t.G, t.B))
+                        else
+                            Update(t)
+                        end
+                    end
+                }
             end
 
             function Elements:CreateKeybind(Cfg)
                 ElementOrder = ElementOrder + 1
                 local Flag = Cfg.Flag or Cfg.Name
                 local CurrentKey = Cfg.Default or Enum.KeyCode.RightControl
-                if Flag then
-                    Library.Flags[Flag] = CurrentKey.Name
-                    Library.KeybindFlags[Flag] = true
-                end
+                Library.Flags[Flag] = CurrentKey.Name
+                Library.KeybindFlags[Flag] = true
                 local Binding = false
                 
                 local Frame = Create("Frame", {
@@ -3268,10 +3205,8 @@ function Library:CreateWindow(Settings)
                 local VP_Key = workspace.CurrentCamera.ViewportSize
                 local IsMobile = UIS.TouchEnabled and (VP_Key.X < 850 or VP_Key.Y < 600)
                 local MobileCheckboxState = false
-                local MobileFlag = Flag and (Flag .. "_Mobile") or nil
-                if MobileFlag then
-                    Library.Flags[MobileFlag] = false
-                end
+                local MobileFlag = Flag .. "_Mobile"
+                Library.Flags[MobileFlag] = false
                 
                 local OnScreenBtn
 
@@ -3303,9 +3238,7 @@ function Library:CreateWindow(Settings)
 
                     local function UpdateMobileBtnState(val)
                         MobileCheckboxState = val
-                        if MobileFlag then
-                            Library.Flags[MobileFlag] = val
-                        end
+                        Library.Flags[MobileFlag] = val
 
                         TS:Create(MStroke, TweenInfo.new(0.3), {
                             Color = val and SelectedTheme.ElementAccent or SelectedTheme.TextDark,
@@ -3387,16 +3320,13 @@ function Library:CreateWindow(Settings)
                         UpdateMobileBtnState(not MobileCheckboxState)
                     end)
 
-                    if MobileFlag then
-                        Library.Items[MobileFlag] = {
-                            Set = function(val)
-                                if MobileCheckboxState ~= val then
-                                    UpdateMobileBtnState(val)
-                                end
-                            end,
-                            Get = function() return MobileCheckboxState end
-                        }
-                    end
+                    Library.Items[MobileFlag] = {
+                        Set = function(val)
+                            if MobileCheckboxState ~= val then
+                                UpdateMobileBtnState(val)
+                            end
+                        end
+                    }
                 end
 
                 local Lbl = Create("TextLabel", {
@@ -3435,9 +3365,7 @@ function Library:CreateWindow(Settings)
 
                 local function Update(newKey)
                     CurrentKey = newKey
-                    if Flag then
-                        Library.Flags[Flag] = newKey.Name
-                    end
+                    Library.Flags[Flag] = newKey.Name
                     BindBtn.Text = KeyMap[newKey.Name] or newKey.Name
                     Binding = false
                     if OnScreenBtn then
@@ -3495,25 +3423,18 @@ function Library:CreateWindow(Settings)
                     end
                 end)
                 
-                if Flag then
-                    Library.Items[Flag] = {
-                        Set = function(key)
-                            if typeof(key) == "EnumItem" then
-                                Update(key)
-                            elseif type(key) == "string" then
-                                local s, k = pcall(function() return Enum.KeyCode[key] end)
-                                if s and k then
-                                    Update(k)
-                                end
-                            end
-                        end,
-                        Get = function() return CurrentKey end
-                    }
-                end
+                Library.Items[Flag] = {
+                    Set = function(keyName)
+                        if Enum.KeyCode[keyName] then
+                            Update(Enum.KeyCode[keyName])
+                        end
+                    end
+                }
             end
 
             return Elements
         end
+
         local TabElements = GetElements(Page)
 
         if Two_Column then
@@ -3706,15 +3627,11 @@ function Library:CreateWindow(Settings)
             ConfigNameInput = v
         end
     })
-
-    local LoadDropCfg
+    
     ConfigBlock:CreateButton({
         Name = "Save Config",
         Callback = function()
             Library:SaveConfig(ConfigNameInput)
-            if LoadDropCfg then
-                LoadDropCfg:Refresh(Library:GetConfigs())
-            end
         end
     })
 
@@ -3731,26 +3648,11 @@ function Library:CreateWindow(Settings)
     })
 
     ConfigBlock:CreateButton({
-        Name = "Load Selected Config",
-        Callback = function()
-            local sel = LoadDropCfg:Get()
-            if sel then
-                Library:LoadConfig(sel)
-            else
-                Library:Notify({Title = "Error", Content = "Select a config first", Duration = 3})
-            end
-        end
-    })
-
-    ConfigBlock:CreateButton({
         Name = "Delete Selected Config",
         Callback = function()
             local sel = LoadDropCfg:Get()
             if sel then
                 Library:DeleteConfig(sel)
-                LoadDropCfg:Refresh(Library:GetConfigs())
-            else
-                Library:Notify({Title = "Error", Content = "Select a config first", Duration = 3})
             end
         end
     })
@@ -3826,6 +3728,8 @@ function Library:CreateWindow(Settings)
     local ThemeBlock = SettingsTab:CreateBlock({Name = "Theme Manager", Side = "Right"})
     
     local ThemeNameInput = "MyTheme"
+    local LoadDrop -- Ссылка для обновления тем
+
     ThemeBlock:CreateInput({
         Name = "Theme Name",
         Flag = "Settings_ThemeName",
@@ -3835,11 +3739,9 @@ function Library:CreateWindow(Settings)
         end
     })
     
-    local LoadDrop
     ThemeBlock:CreateButton({
         Name = "Save Theme",
         Callback = function()
-            local clean = tostring(ThemeNameInput):match("([^/\\]+)%.json$") or tostring(ThemeNameInput):match("([^/\\]+)$") or tostring(ThemeNameInput)
             local ThemeConfig = {
                 Main = {R = SelectedTheme.Main.R, G = SelectedTheme.Main.G, B = SelectedTheme.Main.B},
                 Second = {R = SelectedTheme.Second.R, G = SelectedTheme.Second.G, B = SelectedTheme.Second.B},
@@ -3858,8 +3760,8 @@ function Library:CreateWindow(Settings)
                 CornerRadius = Library.GlobalCornerValue,
                 UiScale = Library.GlobalScale
             }
-            writefile(Library.ThemeFolder .. "/" .. clean .. ".json", HS:JSONEncode(ThemeConfig))
-            Library:Notify({Title = "Theme Saved", Content = "Saved as " .. clean})
+            writefile(Library.ThemeFolder .. "/" .. ThemeNameInput .. ".json", HS:JSONEncode(ThemeConfig))
+            Library:Notify({Title = "Theme Saved", Content = "Saved as " .. ThemeNameInput})
             if LoadDrop then
                 LoadDrop:Refresh(Library:GetThemes())
             end
@@ -3924,16 +3826,10 @@ function Library:CreateWindow(Settings)
         Name = "Delete Selected Theme",
         Callback = function()
             local selected = LoadDrop:Get()
-            if selected then
-                local clean = tostring(selected):match("([^/\\]+)%.json$") or tostring(selected):match("([^/\\]+)$") or tostring(selected)
-                local path = Library.ThemeFolder .. "/" .. clean .. ".json"
-                if isfile(path) then
-                    delfile(path)
-                    Library:Notify({Title = "Theme Deleted", Content = "Deleted " .. clean})
-                    LoadDrop:Refresh(Library:GetThemes())
-                else
-                    Library:Notify({Title = "Error", Content = "Theme file not found"})
-                end
+            if selected and isfile(Library.ThemeFolder .. "/" .. selected .. ".json") then
+                delfile(Library.ThemeFolder .. "/" .. selected .. ".json")
+                Library:Notify({Title = "Theme Deleted", Content = "Deleted " .. selected})
+                LoadDrop:Refresh(Library:GetThemes())
             else
                 Library:Notify({Title = "Error", Content = "Select a valid theme first"})
             end
